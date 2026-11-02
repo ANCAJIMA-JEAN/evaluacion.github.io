@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="light">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluación de Lasiodiplodia</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#ffffff;--card:#fff;--tx:#1f2a1f;--mut:#6b7a6b;--pri:#2e7d32;--pri2:#1b5e20;--bd:#d5dfd3;--err:#c62828}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--tx)}
+header{background:var(--pri2);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0;flex:1}
+main{max-width:980px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid var(--bd);box-shadow:0 1px 3px rgba(46,125,50,.08);border-radius:12px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+input,select{width:100%;padding:11px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--card);color:var(--tx)}
+input[readonly]{opacity:.7}
+input.bad{border-color:var(--err)}
+button{border:0;border-radius:8px;padding:11px 16px;font-size:15px;cursor:pointer;background:var(--pri);color:#fff;font-weight:600}
+button.sec{background:transparent;color:var(--pri);border:1px solid var(--pri)}
+button.hdr{background:#fff;color:var(--pri2)}
+button.del{background:transparent;color:var(--err);padding:4px 8px}
+button:disabled{opacity:.5}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.grid4 label{font-size:12px}
+.tot{font-size:13px;color:var(--mut);margin-top:8px}
+.add{width:100%;font-size:24px;padding:10px;margin-top:4px}
+.hide{display:none}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:9px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-size:12px}
+tbody tr.clk{cursor:pointer}
+tbody tr.clk:hover{background:#e8f5e9}
+#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 18px;border-radius:20px;font-size:14px;z-index:9}
+.warn{background:#fff8e1;color:#6d4c00;padding:10px;border-radius:8px;font-size:13px;margin-bottom:12px}
+@media(max-width:560px){.grid4{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header id="hd"><h1>Evaluación de Lasiodiplodia</h1></header>
+<main>
+
+<!-- PANEL PRINCIPAL -->
+<section id="v-home">
+  <div class="card">
+    <h2 style="margin-top:0">Nueva evaluación</h2>
+    <label>Nombre del evaluador *</label><input id="h-eval" placeholder="Nombre completo">
+    <label>Fecha</label><input id="h-fecha" readonly>
+    <label>Sector a evaluar *</label><select id="h-sector"></select>
+    <label>Tipo de evaluación *</label><select id="h-tipo"></select>
+    <div class="row" style="margin-top:16px"><button id="b-cartilla">Ir a la cartilla →</button></div>
+  </div>
+  <div class="card row" style="justify-content:space-between"><b>Evaluaciones registradas</b><button class="sec" id="b-ver">Ver evaluaciones</button></div>
+</section>
+
+<!-- CARTILLA -->
+<section id="v-cart" class="hide">
+  <div class="card"><b id="c-info"></b></div>
+  <div id="c-filas"></div>
+  <button class="add sec" id="b-add" title="Agregar parcela">+</button>
+</section>
+
+<!-- LISTA -->
+<section id="v-list" class="hide">
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:10px"><b>Resumen de evaluaciones</b><button class="sec" id="b-expall">Exportar todo a Excel</button></div>
+    <div class="tw"><table><thead><tr><th>Sector</th><th>Día</th><th>Evaluador</th><th>Parcelas</th><th>Plantas</th><th>% G1</th><th>% G2</th><th>% G3</th><th>% G4</th></tr></thead><tbody id="l-body"></tbody></table></div>
+    <p class="tot" id="l-empty"></p>
+  </div>
+</section>
+</main>
+<div id="msg" class="hide"></div>
+
+<script>
+/* ===== CONFIGURACIÓN ===== */
+const CONFIG = {
+  API_URL: '',  // Pega aquí la URL de tu Apps Script (termina en /exec)
+  SECTORES: ['O1E1','O1E2','O2E1','O2E2','O3E1','O3E2','JV'],
+  TIPOS: ['Lasiodiplodia por grados']
+};
+/* ========================= */
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const hoy = () => { const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
+const nuevaFila = () => ({parcela:'',hilera:'',g1:0,g2:0,g3:0,g4:0});
+let cur = null, all = [], editing = false;
+
+function msg(t){ const m=$('msg'); m.textContent=t; m.classList.remove('hide'); setTimeout(()=>m.classList.add('hide'),2800); }
+function show(v){ ['home','cart','list'].forEach(x=>$('v-'+x).classList.toggle('hide',x!==v)); header(v); window.scrollTo(0,0); }
+function header(v){
+  const h=$('hd');
+  if(v==='home') h.innerHTML='<h1>Evaluación de Lasiodiplodia</h1>';
+  else if(v==='cart') h.innerHTML='<button class="hdr" id="b-save">💾 Guardar información</button><h1 style="text-align:right">Cartilla</h1><button class="hdr" id="b-back">✕</button>';
+  else h.innerHTML='<button class="hdr" id="b-home">← Panel</button><h1 style="text-align:right">Evaluaciones</h1>';
+  if($('b-save')) $('b-save').onclick=guardar;
+  if($('b-back')) $('b-back').onclick=()=>{ if(confirm('¿Salir de la cartilla sin guardar?')) show(editing?'list':'home'); };
+  if($('b-home')) $('b-home').onclick=()=>show('home');
+}
+
+/* ===== Almacenamiento: Google Sheets (o local si no hay API_URL) ===== */
+const api = {
+  async list(){
+    if(!CONFIG.API_URL) return JSON.parse(localStorage.getItem('lasio_demo')||'[]');
+    const r = await fetch(CONFIG.API_URL+'?action=list'); const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'Error'); return j.rows;
+  },
+  async save(ev){
+    const rows = ev.filas.map(f=>({id:ev.id,fecha:ev.fecha,evaluador:ev.evaluador,sector:ev.sector,tipo:ev.tipo,
+      parcela:f.parcela,hilera:f.hilera,grado1:f.g1,grado2:f.g2,grado3:f.g3,grado4:f.g4,total:f.g1+f.g2+f.g3+f.g4}));
+    if(!CONFIG.API_URL){
+      const a = JSON.parse(localStorage.getItem('lasio_demo')||'[]').filter(r=>r.id!==ev.id).concat(rows);
+      localStorage.setItem('lasio_demo',JSON.stringify(a)); return;
+    }
+    const r = await fetch(CONFIG.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'save',id:ev.id,rows})});
+    const j = await r.json(); if(!j.ok) throw new Error(j.error||'Error');
+  }
+};
+
+function agrupar(rows){
+  const m = {};
+  rows.forEach(r=>{
+    const e = m[r.id] ||= {id:r.id,fecha:String(r.fecha).slice(0,10),evaluador:r.evaluador,sector:r.sector,tipo:r.tipo,filas:[]};
+    e.filas.push({parcela:String(r.parcela),hilera:String(r.hilera),g1:+r.grado1||0,g2:+r.grado2||0,g3:+r.grado3||0,g4:+r.grado4||0});
+  });
+  return Object.values(m).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+}
+const sum = (e,k)=>e.filas.reduce((s,f)=>s+f[k],0);
+const totalPl = e=>sum(e,'g1')+sum(e,'g2')+sum(e,'g3')+sum(e,'g4');
+const pct = (e,k)=>{const t=totalPl(e);return t?(sum(e,k)/t*100).toFixed(1)+'%':'0%'};
+const nParc = e=>new Set(e.filas.map(f=>f.parcela.trim().toLowerCase())).size;
+
+/* ===== Panel principal ===== */
+function initHome(){
+  $('h-fecha').value=hoy();
+  $('h-sector').innerHTML='<option value="">— Seleccione —</option>'+CONFIG.SECTORES.map(s=>`<option>${esc(s)}</option>`).join('');
+  $('h-tipo').innerHTML='<option value="">— Seleccione —</option>'+CONFIG.TIPOS.map(s=>`<option>${esc(s)}</option>`).join('');
+  if(!CONFIG.API_URL){ const w=document.createElement('div'); w.className='warn'; w.textContent='Modo prueba: los datos se guardan solo en este navegador. Configura API_URL para usar Google Sheets.'; $('v-home').prepend(w); }
+}
+$('b-cartilla').onclick=()=>{
+  const ev=$('h-eval').value.trim(), se=$('h-sector').value, ti=$('h-tipo').value;
+  ['h-eval','h-sector','h-tipo'].forEach(i=>$(i).classList.remove('bad'));
+  let ok=true; if(!ev){$('h-eval').classList.add('bad');ok=false} if(!se){$('h-sector').classList.add('bad');ok=false} if(!ti){$('h-tipo').classList.add('bad');ok=false}
+  if(!ok) return msg('Complete los campos obligatorios');
+  editing=false;
+  cur={id:'E'+Date.now(),fecha:hoy(),evaluador:ev,sector:se,tipo:ti,filas:[nuevaFila()]};
+  abrirCartilla();
+};
+
+/* ===== Cartilla ===== */
+function abrirCartilla(){
+  $('c-info').textContent=`${cur.evaluador} · ${cur.sector} · ${cur.fecha} · ${cur.tipo}`;
+  pintarFilas(); show('cart');
+}
+function pintarFilas(){
+  $('c-filas').innerHTML=cur.filas.map((f,i)=>`
+  <div class="card" data-i="${i}">
+    <div class="row" style="justify-content:space-between"><b>Parcela ${i+1}</b>${cur.filas.length>1?'<button class="del" data-del="'+i+'">Quitar</button>':''}</div>
+    <div class="grid2">
+      <div><label>Parcela *</label><input data-k="parcela" value="${esc(f.parcela)}"></div>
+      <div><label>Hilera *</label><input data-k="hilera" value="${esc(f.hilera)}"></div>
+    </div>
+    <div class="grid4" style="margin-top:6px">
+      ${[['g1','Grado 1 (25%)'],['g2','Grado 2 (50%)'],['g3','Grado 3 (75%)'],['g4','Grado 4 (100%)']].map(([k,t])=>`<div><label>${t}</label><input type="number" inputmode="numeric" min="0" step="1" data-k="${k}" value="${f[k]}"></div>`).join('')}
+    </div>
+    <div class="tot">Plantas evaluadas: <b>${f.g1+f.g2+f.g3+f.g4}</b></div>
+  </div>`).join('');
+}
+$('c-filas').addEventListener('input',e=>{
+  const k=e.target.dataset.k; if(!k) return;
+  const i=+e.target.closest('.card').dataset.i, f=cur.filas[i];
+  if(k==='parcela'||k==='hilera'){ f[k]=e.target.value; e.target.classList.remove('bad'); }
+  else { f[k]=Math.max(0,parseInt(e.target.value,10)||0); e.target.closest('.card').querySelector('.tot b').textContent=f.g1+f.g2+f.g3+f.g4; }
+});
+$('c-filas').addEventListener('focusout',e=>{ if(e.target.type==='number'&&e.target.value===''){e.target.value=0} });
+$('c-filas').addEventListener('click',e=>{ const d=e.target.dataset.del; if(d!==undefined){cur.filas.splice(+d,1);pintarFilas();} });
+$('b-add').onclick=()=>{
+  const ult=cur.filas[cur.filas.length-1];
+  if(!ult.parcela.trim()||!ult.hilera.trim()) return msg('Complete parcela e hilera antes de agregar otra');
+  cur.filas.push(nuevaFila()); pintarFilas();
+  const cs=$('c-filas').querySelectorAll('.card'); cs[cs.length-1].scrollIntoView({behavior:'smooth'});
+};
+async function guardar(){
+  let ok=true;
+  $('c-filas').querySelectorAll('.card').forEach((c,i)=>['parcela','hilera'].forEach(k=>{
+    const inp=c.querySelector(`[data-k=${k}]`); const bad=!cur.filas[i][k].trim(); inp.classList.toggle('bad',bad); if(bad) ok=false; }));
+  if(!ok) return msg('Parcela e hilera son obligatorias');
+  const b=$('b-save'); b.disabled=true; b.textContent='Guardando…';
+  try{ await api.save(cur); msg('Evaluación guardada ✔'); await cargarLista(); show('list'); }
+  catch(err){ msg('Error al guardar: '+err.message); b.disabled=false; b.textContent='💾 Guardar información'; }
+}
+
+/* ===== Lista / resumen ===== */
+async function cargarLista(){
+  try{ all=agrupar(await api.list()); }catch(err){ msg('Error al cargar: '+err.message); all=[]; }
+  $('l-body').innerHTML=all.map((e,i)=>`<tr class="clk" data-i="${i}"><td>${esc(e.sector)}</td><td>${esc(e.fecha)}</td><td>${esc(e.evaluador)}</td><td>${nParc(e)}</td><td>${totalPl(e)}</td><td>${pct(e,'g1')}</td><td>${pct(e,'g2')}</td><td>${pct(e,'g3')}</td><td>${pct(e,'g4')}</td></tr>`).join('');
+  $('l-empty').textContent=all.length?'Toque una evaluación para ver su detalle.':'Aún no hay evaluaciones.';
+}
+$('b-ver').onclick=async()=>{ await cargarLista(); show('list'); };
+$('l-body').onclick=e=>{ const tr=e.target.closest('tr'); if(tr) detalle(all[+tr.dataset.i]); };
+
+/* ===== Detalle: ver, editar, exportar ===== */
+function detalle(ev){
+  const t=totalPl(ev);
+  const h=`<div class="card" id="det"><div class="row" style="justify-content:space-between"><b>${esc(ev.sector)} · ${esc(ev.fecha)}</b><span class="row"><button id="d-edit">Editar</button><button class="sec" id="d-xls">Exportar Excel</button><button class="sec" id="d-close">Cerrar</button></span></div>
+  <p class="tot">Evaluador: ${esc(ev.evaluador)} · ${esc(ev.tipo)} · Parcelas: ${nParc(ev)} · Plantas: ${t}</p>
+  <div class="tw"><table><thead><tr><th>Parcela</th><th>Hilera</th><th>G1 (25%)</th><th>G2 (50%)</th><th>G3 (75%)</th><th>G4 (100%)</th><th>Total</th></tr></thead><tbody>
+  ${ev.filas.map(f=>`<tr><td>${esc(f.parcela)}</td><td>${esc(f.hilera)}</td><td>${f.g1}</td><td>${f.g2}</td><td>${f.g3}</td><td>${f.g4}</td><td>${f.g1+f.g2+f.g3+f.g4}</td></tr>`).join('')}
+  <tr><th>Total</th><th></th><th>${sum(ev,'g1')}</th><th>${sum(ev,'g2')}</th><th>${sum(ev,'g3')}</th><th>${sum(ev,'g4')}</th><th>${t}</th></tr></tbody></table></div></div>`;
+  const old=$('det'); if(old) old.remove();
+  $('v-list').insertAdjacentHTML('afterbegin',h); window.scrollTo(0,0);
+  $('d-close').onclick=()=>$('det').remove();
+  $('d-xls').onclick=()=>exportar([ev],`Evaluacion_${ev.sector}_${ev.fecha}`);
+  $('d-edit').onclick=()=>{ editing=true; cur=JSON.parse(JSON.stringify(ev)); abrirCartilla(); };
+}
+function exportar(evs,nombre){
+  const data=[];
+  evs.forEach(e=>e.filas.forEach(f=>data.push({Fecha:e.fecha,Evaluador:e.evaluador,Sector:e.sector,Tipo:e.tipo,Parcela:f.parcela,Hilera:f.hilera,'Grado 1 (25%)':f.g1,'Grado 2 (50%)':f.g2,'Grado 3 (75%)':f.g3,'Grado 4 (100%)':f.g4,'Total plantas':f.g1+f.g2+f.g3+f.g4})));
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data),'Evaluación');
+  XLSX.writeFile(wb,nombre.replace(/[^\w\-]+/g,'_')+'.xlsx');
+}
+$('b-expall').onclick=()=>all.length?exportar(all,'Evaluaciones_Lasiodiplodia'):msg('No hay datos para exportar');
+
+initHome(); header('home');
+</script>
+</body>
+</html>
